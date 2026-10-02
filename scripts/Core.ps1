@@ -186,7 +186,30 @@ function Get-ActionSignature($Task) {
         principal = $Task.Principal | Select-Object UserId, LogonType, RunLevel
     } | ConvertTo-Json -Compress -Depth 4)
 }
+function Get-SingleExecAction($Task) {
+    # 系统任务可能使用 COM 处理程序等动作；不能假定每个动作都有 Execute。
+    if ($null -eq $Task -or $null -eq $Task.PSObject.Properties['Actions']) { return $null }
+    $actions = @($Task.Actions)
+    if ($actions.Count -ne 1 -or $null -eq $actions[0]) { return $null }
+    $action = $actions[0]
+    foreach ($name in @('Execute', 'Arguments', 'WorkingDirectory')) {
+        if ($null -eq $action.PSObject.Properties[$name]) { return $null }
+    }
+    if ($action.Execute -isnot [string] -or [string]::IsNullOrWhiteSpace($action.Execute)) {
+        return $null
+    }
+    return $action
+}
+function Test-OwnStartupTask($Task, [string]$Exe) {
+    $action = Get-SingleExecAction $Task
+    if ($null -eq $action) { return $false }
+    return (Test-CurrentUserTask $Task) -and $action.Execute -eq $Exe -and $action.Arguments -eq '-tray-only'
+}
 function Test-CurrentUserTask($Task) {
+    if ($null -eq $Task -or $null -eq $Task.PSObject.Properties['Principal'] -or
+        $null -eq $Task.Principal -or $null -eq $Task.Principal.PSObject.Properties['UserId']) {
+        return $false
+    }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     return $Task.Principal.UserId -in @($identity.Name, $identity.User.Value, $env:USERNAME)
 }
@@ -231,7 +254,10 @@ function Get-OwnTaskName {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     return ('MinbanMac-Taskbar-' + $sid)
 }
-function Capture-PreviousState([string]$OwnExe) {
+function Capture-PreviousState(
+    [string]$OwnExe,
+    [string]$StartupDirectory = [Environment]::GetFolderPath('Startup')
+) {
     $previous = @()
     foreach ($process in (Get-SessionProcesses 'windhawk.exe')) {
         if ($process.ExecutablePath -eq $OwnExe) { continue }
@@ -249,16 +275,17 @@ function Capture-PreviousState([string]$OwnExe) {
     $tasks = @()
     foreach ($task in @(Get-ScheduledTask -ErrorAction Stop)) {
         if (-not (Test-CurrentUserTask $task)) { continue }
-        $actions = @($task.Actions)
-        if ($task.TaskName -eq (Get-OwnTaskName) -or -not $task.Settings.Enabled -or $actions.Count -ne 1) { continue }
-        if ([IO.Path]::GetFileName($actions[0].Execute.Trim('"')) -ieq 'windhawk.exe') {
+        if ($task.TaskName -eq (Get-OwnTaskName) -or -not $task.Settings.Enabled) { continue }
+        $action = Get-SingleExecAction $task
+        if ($null -eq $action) { continue }
+        if ([IO.Path]::GetFileName($action.Execute.Trim('"')) -ieq 'windhawk.exe') {
             $tasks += [pscustomobject]@{
                 name = $task.TaskName; path = $task.TaskPath; signature = Get-ActionSignature $task
             }
         }
     }
     $links = @()
-    $startup = [Environment]::GetFolderPath('Startup')
+    $startup = $StartupDirectory
     $shell = New-Object -ComObject WScript.Shell
     foreach ($file in @(Get-ChildItem -LiteralPath $startup -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
         $link = $shell.CreateShortcut($file.FullName)
@@ -311,8 +338,7 @@ function Register-OwnStartup($State) {
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $existing = Get-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction SilentlyContinue
     if ($null -ne $existing) {
-        $actions = @($existing.Actions)
-        if ($actions.Count -ne 1 -or $actions[0].Execute -ne $State.runtimeExe -or $actions[0].Arguments -ne '-tray-only') {
+        if (-not (Test-OwnStartupTask $existing $State.runtimeExe)) {
             throw '民办mac启动任务名称被其他任务占用，未覆盖。'
         }
     }
@@ -330,8 +356,7 @@ function Remove-OwnStartup($State) {
     $name = Get-OwnTaskName
     $task = Get-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction SilentlyContinue
     if ($null -ne $task) {
-        $actions = @($task.Actions)
-        if ($actions.Count -ne 1 -or $actions[0].Execute -ne $State.runtimeExe -or $actions[0].Arguments -ne '-tray-only') {
+        if (-not (Test-OwnStartupTask $task $State.runtimeExe)) {
             throw '启动任务被修改，未删除；请检查任务计划程序。'
         }
         Unregister-ScheduledTask -TaskName $name -TaskPath '\' -Confirm:$false
@@ -425,8 +450,7 @@ function Invoke-Apply {
         }
         $collision = Get-ScheduledTask -TaskName (Get-OwnTaskName) -TaskPath '\' -ErrorAction SilentlyContinue
         if ($null -ne $collision) {
-            $actions = @($collision.Actions)
-            if ($actions.Count -ne 1 -or $actions[0].Execute -ne $exe -or $actions[0].Arguments -ne '-tray-only') {
+            if (-not (Test-OwnStartupTask $collision $exe)) {
                 throw '同名登录任务已有其他内容，原方案尚未改变。'
             }
         }

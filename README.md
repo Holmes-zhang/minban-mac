@@ -10,9 +10,9 @@
 
 ## 下载并启用
 
-### [下载一键切换包 · 民办mac 1.0.0](https://github.com/Holmes-zhang/minban-mac/releases/download/v1.0.0/minban-mac-1.0.0.zip)
+### [下载一键切换包 · 民办mac 1.0.1](https://github.com/Holmes-zhang/minban-mac/releases/download/v1.0.1/minban-mac-1.0.1.zip)
 
-1. 点击上面的下载链接，获取 **minban-mac-1.0.0.zip**。
+1. 点击上面的下载链接，获取 **minban-mac-1.0.1.zip**。
 2. 解压到普通文件夹，双击 **应用民办mac.cmd**。
 3. 等待提示“应用完成”，就可以使用了。
 
@@ -23,6 +23,8 @@
 **只调整任务栏，保留你自己的壁纸、桌面文件和应用图标。**
 
 首次需要联网下载官方组件，其中 Windhawk 安装包约 **142 MiB**；以后会复用本机缓存。首次加载也可能需要下载 Windows 符号，请耐心等候。
+
+如果旧版报“找不到 Execute 属性”，请下载 1.0.1，完整解压后重新运行。已经下载的官方组件会复用，无需删除本地缓存或恢复记录。
 
 **想换回去？** 双击 **恢复原任务栏.cmd**，回到应用前的方案。原来的壁纸、桌面文件和应用仍然保留。
 

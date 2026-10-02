@@ -45,6 +45,62 @@ try { [void](Assert-OwnedPath (Join-Path $sandbox 'outside.bin') $script:DataRoo
 catch { $escaped = $true }
 Assert-True $escaped '路径越界拒绝'
 
+# 回归：混合的系统任务包含 COM 动作，首版会在这里直接读取缺失的 Execute。
+$taskIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$taskPrincipal = [pscustomobject]@{
+    UserId = $taskIdentity.Name; LogonType = 'Interactive'; RunLevel = 'Limited'
+}
+$comAction = [pscustomobject]@{ ClassId = '{00000000-0000-0000-0000-000000000001}'; Data = 'fixture' }
+$execPath = Join-Path $sandbox 'previous\windhawk.exe'
+$execAction = [pscustomobject]@{ Execute = $execPath; Arguments = '-tray-only'; WorkingDirectory = $sandbox }
+$otherAction = [pscustomobject]@{ Execute = 'notepad.exe'; Arguments = ''; WorkingDirectory = '' }
+$comTask = [pscustomobject]@{
+    TaskName = 'ComFixture'; TaskPath = '\'; Principal = $taskPrincipal
+    Settings = [pscustomobject]@{ Enabled = $true }; Actions = @($comAction)
+}
+$execTask = [pscustomobject]@{
+    TaskName = 'WindhawkFixture'; TaskPath = '\'; Principal = $taskPrincipal
+    Settings = [pscustomobject]@{ Enabled = $true }; Actions = @($execAction)
+}
+$emptyTask = [pscustomobject]@{
+    TaskName = 'EmptyFixture'; TaskPath = '\'; Principal = $taskPrincipal
+    Settings = [pscustomobject]@{ Enabled = $true }; Actions = @()
+}
+$multipleTask = [pscustomobject]@{
+    TaskName = 'MultipleFixture'; TaskPath = '\'; Principal = $taskPrincipal
+    Settings = [pscustomobject]@{ Enabled = $true }; Actions = @($execAction, $comAction)
+}
+$otherTask = [pscustomobject]@{
+    TaskName = 'OtherProgramFixture'; TaskPath = '\'; Principal = $taskPrincipal
+    Settings = [pscustomobject]@{ Enabled = $true }; Actions = @($otherAction)
+}
+$oldFailure = $false
+try { [void]$comTask.Actions[0].Execute.Trim('"') } catch { $oldFailure = $true }
+Assert-True $oldFailure '夹具能复现首版缺失 Execute 的故障'
+Assert-True ($null -eq (Get-SingleExecAction $comTask)) '跳过 COM 动作'
+Assert-True ($null -eq (Get-SingleExecAction $emptyTask)) '跳过空动作'
+Assert-True ($null -eq (Get-SingleExecAction $multipleTask)) '不修改多个动作的任务'
+Assert-True ($null -eq (Get-SingleExecAction ([pscustomobject]@{ Actions = @([pscustomobject]@{ Execute = ''; Arguments = ''; WorkingDirectory = '' }) }))) '跳过空程序路径'
+Assert-True ($null -eq (Get-SingleExecAction ([pscustomobject]@{ Actions = @([pscustomobject]@{ Execute = 'windhawk.exe' }) }))) '跳过不完整动作'
+Assert-True ((Get-SingleExecAction $execTask).Execute -eq $execPath) '保留正常程序动作'
+Assert-True (-not (Test-OwnStartupTask $comTask $execPath)) '同名 COM 任务不被当成自有启动项'
+Assert-True (Test-OwnStartupTask $execTask $execPath) '当前用户及正确动作匹配自有启动项'
+Assert-True (-not (Test-OwnStartupTask $execTask (Join-Path $sandbox 'different.exe'))) '不同程序路径不匹配'
+Assert-True (-not (Test-CurrentUserTask ([pscustomobject]@{ Principal = [pscustomobject]@{ GroupId = 'fixture-group' } }))) '仅有组身份的任务不被当作当前用户'
+$emptyStartup = Join-Path $sandbox 'EmptyStartup'
+New-Item -ItemType Directory -Path $emptyStartup | Out-Null
+& {
+    function Get-SessionProcesses { param($Name) return @() }
+    function Get-Service { param($Name, $ErrorAction) return @() }
+    function Get-ScheduledTask { param($ErrorAction) return @($comTask, $emptyTask, $multipleTask, $otherTask, $execTask) }
+    function Get-RegistrySnapshot { param($SubKey, $Name)
+        return [pscustomobject]@{ key = $SubKey; name = $Name; exists = $false; value = $null; kind = 'DWord'; desired = 0; changed = $false }
+    }
+    $captured = Capture-PreviousState (Join-Path $sandbox 'own\windhawk.exe') $emptyStartup
+    Assert-True ($captured.previousTasks.Count -eq 1 -and $captured.previousTasks[0].name -eq 'WindhawkFixture') '完整混合任务扫描只记录单个 Windhawk 程序动作'
+    Assert-True (-not $captured.active -and $captured.previousLinks.Count -eq 0) '扫描阶段不启用方案或记录无关快捷方式'
+}
+
 # 模拟网络响应；验证错误内容不能进入缓存或执行。
 function Invoke-WebRequest { param($Uri, $OutFile, $UseBasicParsing, $TimeoutSec, $ErrorAction, $Proxy)
     [IO.File]::WriteAllText($OutFile, 'validated fixture')
