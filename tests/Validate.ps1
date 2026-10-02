@@ -126,6 +126,85 @@ $rejected = $false
 try { [void](Get-PinnedFile 'https://example.invalid/fixture' $hash $badDestination) } catch { $rejected = $true }
 Assert-True ($rejected -and -not (Test-Path -LiteralPath $badDestination)) '错误下载不成为正式缓存'
 
+# 回归：常规下载的证书失败、备用下载成功/失败，以及手动导入均不放宽校验。
+& {
+    $script:curlCalls = 0
+    function Invoke-WebRequest { throw [Net.WebException]::new('信任关系失败', [Net.WebExceptionStatus]::TrustFailure) }
+    function Receive-CurlFile { param($Url, $Destination)
+        $script:curlCalls++
+        [IO.File]::WriteAllText($Destination, 'validated fixture')
+    }
+    $beforeProtocol = [Net.ServicePointManager]::SecurityProtocol
+    $fallbackCache = Join-Path $script:DataRoot 'Cache\fallback.bin'
+    [void](Get-PinnedFile 'https://example.invalid/fixture' $hash $fallbackCache)
+    Assert-True ($script:curlCalls -eq 1 -and (Get-FileDigest $fallbackCache) -eq $hash) '证书错误后安全备用下载成功'
+    Assert-True ([Net.ServicePointManager]::SecurityProtocol -eq $beforeProtocol) '下载失败也恢复原进程 TLS 配置'
+    [void](Get-PinnedFile 'https://example.invalid/fixture' $hash $fallbackCache)
+    Assert-True ($script:curlCalls -eq 1) '有效缓存不调用任何下载器'
+
+    function Receive-CurlFile { param($Url, $Destination)
+        [IO.File]::WriteAllText($Destination, 'wrong body')
+    }
+    $wrongCache = Join-Path $script:DataRoot 'Cache\fallback-wrong.bin'
+    $message = ''
+    try { [void](Get-PinnedFile 'https://example.invalid/fixture' $hash $wrongCache) } catch { $message = $_.Exception.Message }
+    Assert-True ($message -match 'SHA256' -and -not (Test-Path -LiteralPath $wrongCache)) '备用下载也拒绝错误页或被修改内容'
+    Assert-True (@(Get-ChildItem -LiteralPath (Split-Path $wrongCache) -Filter 'fallback-wrong.bin.download-*').Count -eq 0) '失败的临时下载清理'
+
+    function Receive-CurlFile { param($Url, $Destination)
+        [IO.File]::WriteAllText($Destination, 'partial file')
+        throw 'Windows 下载器错误 60：证书信任校验未通过。'
+    }
+    $script:helpShown = $false
+    $script:helpTrust = $false
+    function Write-DownloadHelp { param($Url, $Destination, $TrustFailure)
+        $script:helpShown = $true; $script:helpTrust = $TrustFailure
+    }
+    $failedCache = Join-Path $script:DataRoot 'Cache\both-failed.bin'
+    $message = ''
+    try { [void](Get-PinnedFile 'https://example.invalid/fixture' $hash $failedCache) } catch { $message = $_.Exception.Message }
+    Assert-True ($script:helpShown -and $script:helpTrust -and $message -match '60') '双下载器失败给出证书和导入指引'
+    Assert-True (-not (Test-Path -LiteralPath $failedCache) -and @(Get-ChildItem -LiteralPath (Split-Path $failedCache) -Filter 'both-failed.bin.download-*').Count -eq 0) '双失败不留下正式缓存或未完成文件'
+    Assert-True (-not (Test-TlsTrustFailure ([Exception]::new('连接超时')))) '普通网络错误不误判为证书故障'
+
+    $script:ProxyUrl = 'http://127.0.0.1:12345'
+    $arguments = Get-CurlArguments 'https://example.invalid/fixture' (Join-Path $sandbox '目录 有空格\file.exe')
+    Assert-True ($arguments[0] -eq '--disable' -and $arguments -contains '=https' -and $arguments -notcontains '--insecure' -and $arguments -notcontains '-k') '备用下载限制 HTTPS 且不跳过证书或读取个人 curl 配置'
+    Assert-True ($arguments -contains $script:ProxyUrl -and $arguments -contains (Join-Path $sandbox '目录 有空格\file.exe')) '代理与含空格文件路径按独立参数传递'
+    $script:ProxyUrl = ''
+    $message = ''
+    try { [void](Get-PinnedFile 'http://example.invalid/fixture' $hash (Join-Path $script:DataRoot 'Cache\insecure.bin')) } catch { $message = $_.Exception.Message }
+    Assert-True ($message -match 'HTTPS') '拒绝降级到 HTTP 下载'
+
+    $script:importEntries = @([pscustomobject]@{ name = 'import-fixture.dll'; sha256 = $hash; installer = $false })
+    function Get-DownloadEntries { return $script:importEntries }
+    $importFile = Join-Path $sandbox 'browser-download-renamed-file.bin'
+    [IO.File]::WriteAllText($importFile, 'validated fixture')
+    Import-PinnedDownload $importFile
+    $importCache = Join-Path $script:DataRoot 'Cache\import-fixture.dll'
+    Assert-True ((Get-FileDigest $importCache) -eq $hash) '按固定哈希导入，浏览器文件名不同也可识别'
+    Assert-True (Test-Path -LiteralPath $importFile) '导入保留用户原下载文件'
+    [IO.File]::WriteAllText($importCache, 'tampered existing')
+    $message = ''
+    try { Import-PinnedDownload $importFile } catch { $message = $_.Exception.Message }
+    Assert-True ($message -match '未覆盖' -and [IO.File]::ReadAllText($importCache) -eq 'tampered existing') '导入不覆盖损坏的已有正式缓存'
+    [IO.File]::WriteAllText($importFile, 'unapproved file')
+    $message = ''
+    try { Import-PinnedDownload $importFile } catch { $message = $_.Exception.Message }
+    Assert-True ($message -match '固定版本') '不接受未知版本或错误浏览器下载'
+    [IO.File]::WriteAllText($importFile, 'validated fixture')
+    $script:importEntries[0].name = 'import-installer.exe'
+    $script:importEntries[0].installer = $true
+    function Get-AuthenticodeSignature { param($LiteralPath) return [pscustomobject]@{ Status = 'NotTrusted' } }
+    $message = ''
+    try { Import-PinnedDownload $importFile } catch { $message = $_.Exception.Message }
+    Assert-True ($message -match '数字签名' -and -not (Test-Path -LiteralPath (Join-Path $script:DataRoot 'Cache\import-installer.exe'))) '安装包哈希正确但签名未被信任仍拒绝'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $script:DataRoot 'Cache') -Filter '*.import-*').Count -eq 0) '导入失败清理自己的临时副本'
+    function Get-AuthenticodeSignature { param($LiteralPath) return [pscustomobject]@{ Status = 'Valid' } }
+    Import-PinnedDownload $importFile
+    Assert-True ((Get-FileDigest (Join-Path $script:DataRoot 'Cache\import-installer.exe')) -eq $hash) '签名与哈希同时通过才导入安装包'
+}
+
 # 配置输出与编码：使用占位文件，不运行任何程序。
 $shim = Join-Path $script:RuntimeRoot 'Compiler\x86_64-w64-mingw32\bin'
 New-Item -ItemType Directory -Path $shim -Force | Out-Null

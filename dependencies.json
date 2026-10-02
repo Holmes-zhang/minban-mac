@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "name": "民办mac",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "windhawk": {
     "version": "1.7.3",
     "url": "https://github.com/ramensoftware/windhawk/releases/download/v1.7.3/windhawk_setup_offline.exe",

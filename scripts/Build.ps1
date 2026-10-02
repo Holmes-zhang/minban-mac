@@ -16,7 +16,7 @@ $package = Join-Path $stage $folderName
 New-Item -ItemType Directory -Path $package | Out-Null
 $allowed = @(
     'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md', 'dependencies.json', '.gitignore', '.gitattributes',
-    '应用民办mac.cmd', '恢复原任务栏.cmd', '检查环境.cmd', '网络设置.cmd', '任务栏设置.cmd',
+    '应用民办mac.cmd', '恢复原任务栏.cmd', '检查环境.cmd', '网络设置.cmd', '任务栏设置.cmd', '导入下载文件.cmd',
     'scripts\Core.ps1', 'scripts\Launcher.ps1', 'scripts\Build.ps1', 'tests\Validate.ps1',
     'docs\preview.png', 'docs\TROUBLESHOOTING.md', 'docs\ARCHITECTURE.md', 'docs\VALIDATION.md', 'docs\MAINTAINER.md',
     'licenses\MIT.txt'

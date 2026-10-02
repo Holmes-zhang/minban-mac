@@ -1,6 +1,6 @@
 ﻿# SPDX-License-Identifier: GPL-3.0-only
 param(
-    [ValidateSet('Apply', 'Restore', 'Check', 'Network', 'Settings')]
+    [ValidateSet('Apply', 'Restore', 'Check', 'Network', 'Settings', 'Import')]
     [string]$Mode = 'Apply',
     [string]$ProxyUrl = ''
 )
@@ -26,6 +26,13 @@ try {
         Initialize-DataDirectory
         Write-Json (Join-Path $script:DataRoot 'network.local.json') @{ proxy = $inputUrl }
         Write-Status '网络设置已保存。'
+    } elseif ($Mode -eq 'Import') {
+        Write-Host '请把浏览器下载完成的官方组件拖进这个窗口，再按 Enter。'
+        Write-Host '按固定版本的 SHA256 识别文件，不要求你改名；本入口不会运行安装包或切换任务栏。'
+        $inputPath = (Read-Host '文件路径').Trim().Trim('"')
+        if (-not $inputPath) { throw '未选择文件。' }
+        Import-PinnedDownload $inputPath
+        Write-Status '现在可以重新运行“应用民办mac.cmd”。'
     } elseif ($Mode -eq 'Settings') {
         Start-Process 'ms-settings:taskbar'
     } elseif ($Mode -eq 'Check') {

@@ -62,29 +62,118 @@ function Initialize-DataDirectory {
         if (-not (Test-Path -LiteralPath $path)) { New-Item -ItemType Directory -Path $path | Out-Null }
     }
 }
+function Receive-WebFile([string]$Url, [string]$Destination) {
+    $request = @{
+        Uri = $Url; OutFile = $Destination; UseBasicParsing = $true
+        TimeoutSec = 600; ErrorAction = 'Stop'
+    }
+    if ($script:ProxyUrl) { $request.Proxy = $script:ProxyUrl }
+    $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        # Windows 11 自行选择安全协议；不关闭证书校验，也不永久改进程配置。
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault
+        Invoke-WebRequest @request
+    } finally { [Net.ServicePointManager]::SecurityProtocol = $oldProtocol }
+}
+function Get-SystemCurlPath {
+    $path = Join-Path $env:WINDIR 'System32\curl.exe'
+    if (Test-Path -LiteralPath $path) { return $path }
+    return ''
+}
+function Get-CurlArguments([string]$Url, [string]$Destination) {
+    $arguments = @(
+        '--disable', '--fail', '--location', '--silent', '--show-error',
+        '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2',
+        '--connect-timeout', '25', '--max-time', '600',
+        '--output', $Destination, '--url', $Url
+    )
+    $proxy = $script:ProxyUrl
+    if (-not $proxy) {
+        # curl 不自动读取 Windows Internet 设置，尽量沿用原下载器的默认代理。
+        $webProxy = [Net.WebRequest]::DefaultWebProxy
+        if ($null -ne $webProxy) {
+            $target = [Uri]$Url
+            $resolved = $webProxy.GetProxy($target)
+            if ($null -ne $resolved -and $resolved.AbsoluteUri -ne $target.AbsoluteUri) {
+                $proxy = $resolved.AbsoluteUri
+            }
+        }
+    }
+    if ($proxy) { $arguments += @('--proxy', $proxy) }
+    return ,$arguments
+}
+function Receive-CurlFile([string]$Url, [string]$Destination) {
+    $curl = Get-SystemCurlPath
+    if (-not $curl) { throw '未找到 Windows 自带下载器。' }
+    $arguments = Get-CurlArguments $Url $Destination
+    $oldPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 把原生程序的标准错误作为记录；统一按退出码判断。
+        $ErrorActionPreference = 'Continue'
+        $nativeOutput = & $curl @arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $oldPreference }
+    if ($code -ne 0) {
+        $reason = '连接未完成'
+        if ($code -eq 60) { $reason = '证书信任校验未通过' }
+        elseif ($code -eq 35) { $reason = 'TLS 安全连接未建立' }
+        elseif ($code -eq 28) { $reason = '连接超时' }
+        elseif ($code -eq 22) { $reason = '服务器未提供所需文件' }
+        # 不回显原生输出，避免把含凭据的个人代理地址写入错误提示。
+        throw ('Windows 下载器错误 ' + $code + '：' + $reason + '。')
+    }
+}
+function Test-TlsTrustFailure($Exception) {
+    $current = $Exception
+    for ($i = 0; $i -lt 20 -and $null -ne $current; $i++) {
+        if ($current -is [Net.WebException] -and $current.Status -eq [Net.WebExceptionStatus]::TrustFailure) {
+            return $true
+        }
+        if ($current.Message -match 'SSL/TLS|证书|信任关系|certificate|trust relationship|TLS 安全') { return $true }
+        $current = $current.InnerException
+    }
+    return $false
+}
+function Write-DownloadHelp([string]$Url, [string]$Destination, [bool]$TrustFailure) {
+    if ($TrustFailure) {
+        Write-Host '安全连接校验失败。请先核对系统日期和时间、Windows 更新，以及代理或安全软件的 HTTPS 设置。'
+    }
+    Write-Host '也可以用浏览器打开以下官方地址，下载后双击“导入下载文件.cmd”，按提示拖入文件：'
+    Write-Host $Url
+    Write-Host ('需要的文件：' + [IO.Path]::GetFileName($Destination))
+    Write-Host '导入成功后重新运行“应用民办mac.cmd”；无需删除缓存或恢复记录。'
+}
 function Get-PinnedFile([string]$Url, [string]$Sha256, [string]$Destination) {
     [void](Assert-OwnedPath $Destination $script:DataRoot)
+    $uri = [Uri]$Url
+    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https') { throw '只允许 HTTPS 官方下载。' }
     if (Test-Path -LiteralPath $Destination) {
         if ((Get-FileDigest $Destination) -eq $Sha256) { return $Destination }
         throw ('缓存校验失败，请检查或移走该文件后重试：' + $Destination)
     }
     $temporary = $Destination + '.download-' + [Guid]::NewGuid().ToString('N')
-    $request = @{
-        Uri = $Url; OutFile = $temporary; UseBasicParsing = $true
-        TimeoutSec = 600; ErrorAction = 'Stop'
-    }
-    if ($script:ProxyUrl) { $request.Proxy = $script:ProxyUrl }
     $oldProgress = $ProgressPreference
     try {
         $ProgressPreference = 'SilentlyContinue'
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest @request
+        try { Receive-WebFile $Url $temporary }
+        catch {
+            $primaryError = $_.Exception
+            Write-Status '常规下载未完成，改用 Windows 自带下载器重试（仍校验证书）……'
+            try { Receive-CurlFile $Url $temporary }
+            catch {
+                $fallbackError = $_.Exception
+                Write-DownloadHelp $Url $Destination ((Test-TlsTrustFailure $primaryError) -or (Test-TlsTrustFailure $fallbackError))
+                throw ('官方下载未完成。' + $fallbackError.Message)
+            }
+        }
         if ((Get-FileDigest $temporary) -ne $Sha256) {
             throw '下载文件的 SHA256 与固定版本清单不符，未运行该文件。'
         }
         Move-Item -LiteralPath $temporary -Destination $Destination
     } finally {
         $ProgressPreference = $oldProgress
+        # 只清理本次生成的单个临时文件，保留正式缓存与恢复数据。
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
     }
     return $Destination
 }
@@ -93,6 +182,44 @@ function Get-Manifest {
 }
 function Get-ModLibraryName($Mod) {
     return ($Mod.id + '_' + $Mod.version + '.dll')
+}
+function Get-DownloadEntries {
+    $manifest = Get-Manifest
+    $entries = @([pscustomobject]@{
+        name = ('windhawk_setup_offline_' + $manifest.windhawk.version + '.exe')
+        sha256 = $manifest.windhawk.sha256; installer = $true
+    })
+    foreach ($mod in $manifest.mods) {
+        $entries += [pscustomobject]@{ name = Get-ModLibraryName $mod; sha256 = $mod.dllSha256; installer = $false }
+        $entries += [pscustomobject]@{ name = ($mod.id + '.wh.cpp'); sha256 = $mod.sourceSha256; installer = $false }
+    }
+    return $entries
+}
+function Import-PinnedDownload([string]$Source) {
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw '未找到所选文件，请拖入下载完成的单个文件。' }
+    $hash = Get-FileDigest $Source
+    $matches = @(Get-DownloadEntries | Where-Object sha256 -eq $hash)
+    if ($matches.Count -ne 1) { throw '文件与固定版本的官方组件不符，未导入。请使用下载失败时提示的官方地址。' }
+    $entry = $matches[0]
+    Initialize-DataDirectory
+    $destination = Join-Path $script:DataRoot ('Cache\' + $entry.name)
+    [void](Assert-OwnedPath $destination $script:DataRoot)
+    if (Test-Path -LiteralPath $destination) {
+        if ((Get-FileDigest $destination) -eq $hash) { Write-Status ('已有有效缓存：' + $entry.name); return }
+        throw ('已有同名缓存校验失败，未覆盖；请先保留或移走：' + $destination)
+    }
+    $temporary = $destination + '.import-' + [Guid]::NewGuid().ToString('N') + [IO.Path]::GetExtension($entry.name)
+    try {
+        Copy-Item -LiteralPath $Source -Destination $temporary
+        if ((Get-FileDigest $temporary) -ne $entry.sha256) { throw '复制后的文件校验失败，未导入。' }
+        if ($entry.installer -and (Get-AuthenticodeSignature -LiteralPath $temporary).Status -ne 'Valid') {
+            throw '安装包数字签名验证未通过，未导入。请核对系统时间与 Windows 证书更新。'
+        }
+        Move-Item -LiteralPath $temporary -Destination $destination
+        Write-Status ('已校验并导入：' + $entry.name)
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
 }
 function New-ModConfiguration($Mod, [string]$Preset, [long]$Timestamp) {
     if ($Preset -notmatch '(?m)^\[Settings\]\s*$') { throw '预设缺少 Settings 段。' }
