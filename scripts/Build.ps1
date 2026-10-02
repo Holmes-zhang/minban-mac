@@ -31,7 +31,7 @@ foreach ($relative in $allowed) {
     Copy-Item -LiteralPath $source -Destination $target
 }
 if (-not (Test-Path -LiteralPath $OutputDirectory)) { New-Item -ItemType Directory -Path $OutputDirectory | Out-Null }
-$zip = Join-Path $OutputDirectory ($folderName + '.zip')
+$zip = Join-Path $OutputDirectory ('minban-mac-' + $manifest.version + '.zip')
 if (Test-Path -LiteralPath $zip) { throw '同名压缩包已存在，未覆盖；请保留它或选择新输出目录。' }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -10,9 +10,9 @@
 
 ## 下载并启用
 
-### [下载一键切换包 · 民办mac 1.0.0](https://github.com/Holmes-zhang/minban-mac/releases/download/v1.0.0/%E6%B0%91%E5%8A%9Emac-1.0.0.zip)
+### [下载一键切换包 · 民办mac 1.0.0](https://github.com/Holmes-zhang/minban-mac/releases/download/v1.0.0/minban-mac-1.0.0.zip)
 
-1. 点击上面的下载链接，获取 **民办mac-1.0.0.zip**。
+1. 点击上面的下载链接，获取 **minban-mac-1.0.0.zip**。
 2. 解压到普通文件夹，双击 **应用民办mac.cmd**。
 3. 等待提示“应用完成”，就可以使用了。
 
