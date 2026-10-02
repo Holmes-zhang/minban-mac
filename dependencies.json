@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "name": "民办mac",
+  "version": "1.0.0",
+  "windhawk": {
+    "version": "1.7.3",
+    "url": "https://github.com/ramensoftware/windhawk/releases/download/v1.7.3/windhawk_setup_offline.exe",
+    "sha256": "4D93016570F982326EEBDFC9068E924FF21F6448534EA32672BB4C1D52A8193B",
+    "bytes": 148917720,
+    "license": "GPL-3.0",
+    "source": "https://github.com/ramensoftware/windhawk/tree/v1.7.3"
+  },
+  "mods": [
+    {
+      "id": "windows-11-taskbar-styler",
+      "version": "1.10",
+      "author": "m417z",
+      "license": "GPL-3.0",
+      "dllUrl": "https://mods.windhawk.net/mods/windows-11-taskbar-styler/1.10_64.dll",
+      "dllSha256": "E755B075AAE140DE0379A2EC6D6C2EA6A025A84E68792C3493FA52282D0B800B",
+      "sourceUrl": "https://mods.windhawk.net/mods/windows-11-taskbar-styler/1.10.wh.cpp",
+      "sourceSha256": "88D2D43768A2E8D92522F9C1615BCD2B6C209DD32E1610426738E4C5AF40D592"
+    },
+    {
+      "id": "taskbar-icon-size",
+      "version": "1.3.10",
+      "author": "m417z",
+      "license": "GPL-3.0",
+      "dllUrl": "https://mods.windhawk.net/mods/taskbar-icon-size/1.3.10_64.dll",
+      "dllSha256": "9F5FC46D5FA94A533F5C707B17DF4855E8D3236E5F5414D1E8E0588801D1086A",
+      "sourceUrl": "https://mods.windhawk.net/mods/taskbar-icon-size/1.3.10.wh.cpp",
+      "sourceSha256": "B9DDCC0F3CEA1D7DB85E604B76868C4FBAB4257C1F2F3FA018BB6350E1BE9E6C"
+    },
+    {
+      "id": "taskbar-auto-hide-when-maximized",
+      "version": "1.2.6",
+      "author": "m417z",
+      "license": "GPL-3.0",
+      "dllUrl": "https://mods.windhawk.net/mods/taskbar-auto-hide-when-maximized/1.2.6_64.dll",
+      "dllSha256": "C23F0259820EC89409D6A4E730C7B59692D0CE3F1747AD29D275212B591256B0",
+      "sourceUrl": "https://mods.windhawk.net/mods/taskbar-auto-hide-when-maximized/1.2.6.wh.cpp",
+      "sourceSha256": "ED429BF58070923B53CD52A6F14721FB210783DA70374EE5BDA5651939EDDAF9"
+    },
+    {
+      "id": "taskbar-autohide-instant-show",
+      "version": "2.2",
+      "author": "Bo0ii",
+      "license": "MIT",
+      "dllUrl": "https://mods.windhawk.net/mods/taskbar-autohide-instant-show/2.2_64.dll",
+      "dllSha256": "8267A74CE6248E7F0BF99F467C0A7B8DAC2993E1E8B72664123CD5595F239AA7",
+      "sourceUrl": "https://mods.windhawk.net/mods/taskbar-autohide-instant-show/2.2.wh.cpp",
+      "sourceSha256": "B8D483276D9C8D768819A2AE145C29C2A60AFAFFBA8853407BAC536A605530C7"
+    }
+  ]
+}

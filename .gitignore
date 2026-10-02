@@ -1,0 +1,15 @@
+# 仅提交项目源码、预设和文档。
+dist/
+.build/
+*.log
+*.zip
+*.exe
+*.dll
+*.whl
+*.lnk
+*.download-*
+state.json
+network.local.json
+Backups/
+Runtime/
+Cache/
