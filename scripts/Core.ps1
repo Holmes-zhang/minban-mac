@@ -180,6 +180,66 @@ function Get-PinnedFile([string]$Url, [string]$Sha256, [string]$Destination) {
 function Get-Manifest {
     return Read-Json (Join-Path $script:ProjectRoot 'dependencies.json')
 }
+function Get-BundledMods {
+    $manifest = Get-Manifest
+    if ($manifest.PSObject.Properties['bundledMods']) { return @($manifest.bundledMods) }
+    return @()
+}
+function Get-AllMods { return @((Get-Manifest).mods) + @(Get-BundledMods) }
+function Get-NoticeEnabled {
+    $path = Join-Path $script:DataRoot 'preferences.local.json'
+    if (Test-Path -LiteralPath $path) {
+        $preferences = Read-Json $path
+        if ($preferences.PSObject.Properties['noticeEnabled']) { return [bool]$preferences.noticeEnabled }
+    }
+    return $true
+}
+function Get-EnabledMods {
+    return @(Get-AllMods | Where-Object { $_.id -ne 'minban-qq-notice' -or (Get-NoticeEnabled) })
+}
+function Get-BundledProjectFile([string]$RelativePath) {
+    if ($RelativePath -match '(^|[\\/])\.\.([\\/]|$)' -or [IO.Path]::IsPathRooted($RelativePath)) {
+        throw '附带组件路径无效。'
+    }
+    return Assert-OwnedPath (Join-Path $script:ProjectRoot $RelativePath) $script:ProjectRoot
+}
+function Assert-BundledMods {
+    foreach ($mod in @(Get-BundledMods)) {
+        $binary = Get-BundledProjectFile $mod.binaryPath
+        if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or
+            (Get-FileDigest $binary) -ne $mod.dllSha256) { throw '独立提醒组件缺失或校验失败，请重新完整解压 Beta 包。' }
+        if ([IO.Path]::GetFileName($binary) -ne (Get-ModLibraryName $mod)) { throw '独立提醒程序版本与清单不符。' }
+        $mainFound = $false
+        foreach ($source in $mod.sourceFiles) {
+            $path = Get-BundledProjectFile $source.path
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+                (Get-FileDigest $path) -ne $source.sha256) { throw '独立提醒对应源码缺失或校验失败。' }
+            if ($source.path -eq $mod.sourcePath) { $mainFound = $true }
+        }
+        if (-not $mainFound) { throw '独立提醒清单缺少主源码。' }
+    }
+}
+function Set-NoticeEnabled([bool]$Enabled) {
+    if (-not (Test-Path -LiteralPath $script:StatePath)) { throw '请先运行“应用民办mac.cmd”。' }
+    $state = Read-Json $script:StatePath
+    $exe = Join-Path $script:RuntimeRoot 'windhawk.exe'
+    if ($state.owner -ne 'minban-mac' -or $state.runtimeExe -ne $exe -or -not $state.active) {
+        throw '本包尚未启用，请先运行“应用民办mac.cmd”。'
+    }
+    $mods = @(Get-BundledMods | Where-Object id -eq 'minban-qq-notice')
+    if ($mods.Count -ne 1) { throw '独立提醒清单不完整。' }
+    $path = Assert-OwnedPath (Join-Path $script:RuntimeRoot 'AppData\Engine\Mods\minban-qq-notice.ini') $script:RuntimeRoot
+    $text = [IO.File]::ReadAllText($path)
+    $expected = [regex]::Escape((Get-ModLibraryName $mods[0]))
+    if ($text -notmatch ('(?m)^LibraryFileName=' + $expected + '\r?$') -or
+        [regex]::Matches($text, '(?m)^Disabled=[01]\r?$').Count -ne 1) { throw '独立提醒配置被改变，未覆盖。' }
+    $disabled = if ($Enabled) { '0' } else { '1' }
+    $text = [regex]::Replace($text, '(?m)^Disabled=[01]', ('Disabled=' + $disabled))
+    $text = [regex]::Replace($text, 'SettingsChangeTime=\d+', ('SettingsChangeTime=' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()))
+    [IO.File]::WriteAllText($path, $text, [Text.Encoding]::Unicode)
+    Write-Json (Join-Path $script:DataRoot 'preferences.local.json') @{ noticeEnabled = $Enabled }
+    Write-Status $(if ($Enabled) { '已开启独立图标提醒。' } else { '已关闭独立图标提醒，任务栏美化保留。' })
+}
 function Get-ModLibraryName($Mod) {
     return ($Mod.id + '_' + $Mod.version + '.dll')
 }
@@ -234,6 +294,7 @@ function New-ModConfiguration($Mod, [string]$Preset, [long]$Timestamp) {
     return ($lines -join [Environment]::NewLine)
 }
 function Ensure-Runtime {
+    Assert-BundledMods
     $manifest = Get-Manifest
     $exe = Join-Path $script:RuntimeRoot 'windhawk.exe'
     $markerPath = Join-Path $script:RuntimeRoot 'minban-mac-runtime.json'
@@ -270,6 +331,7 @@ function Ensure-Runtime {
     return $exe
 }
 function Write-RuntimeConfiguration {
+    Assert-BundledMods
     $manifest = Get-Manifest
     $appData = Join-Path $script:RuntimeRoot 'AppData'
     $modsPath = Join-Path $appData 'Engine\Mods'
@@ -286,13 +348,23 @@ function Write-RuntimeConfiguration {
         Copy-Item -LiteralPath (Join-Path $shimSource $pair[0]) -Destination (Join-Path $binaryPath $pair[1]) -Force
     }
     $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    foreach ($mod in $manifest.mods) {
-        Copy-Item -LiteralPath (Join-Path $script:DataRoot ('Cache\' + (Get-ModLibraryName $mod))) -Destination (
-            Join-Path $binaryPath (Get-ModLibraryName $mod)) -Force
-        Copy-Item -LiteralPath (Join-Path $script:DataRoot ('Cache\' + $mod.id + '.wh.cpp')) -Destination (
-            Join-Path $sourcePath ($mod.id + '.wh.cpp')) -Force
+    foreach ($mod in @(Get-AllMods)) {
+        if ($mod.PSObject.Properties['binaryPath']) {
+            Copy-Item -LiteralPath (Get-BundledProjectFile $mod.binaryPath) -Destination (Join-Path $binaryPath (Get-ModLibraryName $mod)) -Force
+            foreach ($source in $mod.sourceFiles) {
+                Copy-Item -LiteralPath (Get-BundledProjectFile $source.path) -Destination (Join-Path $sourcePath ([IO.Path]::GetFileName($source.path))) -Force
+            }
+        } else {
+            Copy-Item -LiteralPath (Join-Path $script:DataRoot ('Cache\' + (Get-ModLibraryName $mod))) -Destination (
+                Join-Path $binaryPath (Get-ModLibraryName $mod)) -Force
+            Copy-Item -LiteralPath (Join-Path $script:DataRoot ('Cache\' + $mod.id + '.wh.cpp')) -Destination (
+                Join-Path $sourcePath ($mod.id + '.wh.cpp')) -Force
+        }
         $preset = [IO.File]::ReadAllText((Join-Path $script:ProjectRoot ('presets\' + $mod.id + '.settings.ini')))
         $config = New-ModConfiguration $mod $preset $timestamp
+        if ($mod.id -eq 'minban-qq-notice' -and -not (Get-NoticeEnabled)) {
+            $config = $config.Replace('Disabled=0', 'Disabled=1')
+        }
         [IO.File]::WriteAllText((Join-Path $modsPath ($mod.id + '.ini')), $config, [Text.Encoding]::Unicode)
     }
     $engineConfig = @(
@@ -550,7 +622,7 @@ function Wait-RuntimeLoaded([string]$Exe, [int]$Seconds = 90) {
                 Where-Object SessionId -eq (Get-Process -Id $PID).SessionId)) {
                 try {
                     $names = @($explorer.Modules | Select-Object -ExpandProperty ModuleName)
-                    if (@($manifest.mods | Where-Object { $names -notcontains (Get-ModLibraryName $_) }).Count -eq 0) {
+                    if (@(Get-EnabledMods | Where-Object { $names -notcontains (Get-ModLibraryName $_) }).Count -eq 0) {
                         return $true
                     }
                 } catch { }
@@ -594,11 +666,15 @@ function Invoke-Apply {
         $state.manualSearchRequired = -not (Set-SingleRegistryValue $state.nativeSearch 1 $state)
         [void](Set-SingleRegistryValue $state.nativeAlignment 1 $state)
         Write-Json $script:StatePath $state
+        # 重新应用/升级前退出本包，避免覆盖已加载的 DLL。原始恢复记录继续保留。
+        if (@(Get-SessionProcesses 'windhawk.exe' | Where-Object ExecutablePath -eq $exe).Count -gt 0) {
+            Stop-Windhawk $exe
+        }
         Write-RuntimeConfiguration
         Register-OwnStartup $state
         Start-Process -FilePath $exe -ArgumentList '-tray-only' -WindowStyle Hidden
-        Write-Status '等待四个模组加载；首次使用可能需要下载 Windows 符号……'
-        if (-not (Wait-RuntimeLoaded $exe)) { throw '90 秒内未确认四个模组加载，正在恢复原方案。' }
+        Write-Status '等待启用的模组加载；首次使用可能需要下载 Windows 符号……'
+        if (-not (Wait-RuntimeLoaded $exe)) { throw '90 秒内未确认启用的模组加载，正在恢复原方案。' }
         $state.active = $true
         Write-Json $script:StatePath $state
         Write-Status '应用完成。原壁纸保留，下次登录自动加载。'

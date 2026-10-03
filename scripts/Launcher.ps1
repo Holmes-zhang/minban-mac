@@ -1,6 +1,6 @@
 ﻿# SPDX-License-Identifier: GPL-3.0-only
 param(
-    [ValidateSet('Apply', 'Restore', 'Check', 'Network', 'Settings', 'Import')]
+    [ValidateSet('Apply', 'Restore', 'Check', 'Network', 'Settings', 'Import', 'NoticeOn', 'NoticeOff')]
     [string]$Mode = 'Apply',
     [string]$ProxyUrl = ''
 )
@@ -33,6 +33,8 @@ try {
         if (-not $inputPath) { throw '未选择文件。' }
         Import-PinnedDownload $inputPath
         Write-Status '现在可以重新运行“应用民办mac.cmd”。'
+    } elseif ($Mode -eq 'NoticeOn' -or $Mode -eq 'NoticeOff') {
+        Set-NoticeEnabled ($Mode -eq 'NoticeOn')
     } elseif ($Mode -eq 'Settings') {
         Start-Process 'ms-settings:taskbar'
     } elseif ($Mode -eq 'Check') {
@@ -40,7 +42,9 @@ try {
         Write-Status '系统为 Windows 11 x64。'
         $manifest = Get-Manifest
         Write-Status ('项目版本：' + $manifest.version + '；依赖模组数：' + $manifest.mods.Count)
-        foreach ($mod in $manifest.mods) {
+        Assert-BundledMods
+        Write-Status ('附带独立提醒组件：' + @(Get-BundledMods).Count)
+        foreach ($mod in @(Get-AllMods)) {
             $path = Join-Path $script:ProjectRoot ('presets\' + $mod.id + '.settings.ini')
             [void](New-ModConfiguration $mod ([IO.File]::ReadAllText($path)) 1)
         }

@@ -4,3 +4,5 @@
 *.cmd text eol=crlf
 *.ini text eol=crlf
 *.png binary
+*.cpp text eol=lf
+*.h text eol=lf

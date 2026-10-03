@@ -10,6 +10,7 @@ dist/
 *.download-*
 state.json
 network.local.json
+preferences.local.json
 Backups/
 Runtime/
 Cache/

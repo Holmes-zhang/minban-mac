@@ -9,7 +9,7 @@ $engine = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 & $engine -NoProfile -ExecutionPolicy Bypass -File (Join-Path $project 'tests\Validate.ps1')
 if ($LASTEXITCODE -ne 0) { throw '隔离检查未通过，停止打包。' }
 $manifest = [IO.File]::ReadAllText((Join-Path $project 'dependencies.json')) | ConvertFrom-Json
-if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw '版本号格式错误。' }
+if ($manifest.version -notmatch '^\d+\.\d+\.\d+(-beta\.\d+)?$') { throw '版本号格式错误。' }
 $folderName = '民办mac-' + $manifest.version
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('MinbanMac-Package-' + [Guid]::NewGuid().ToString('N'))
 $package = Join-Path $stage $folderName
@@ -22,6 +22,15 @@ $allowed = @(
     'licenses\MIT.txt'
 )
 $allowed += @($manifest.mods | ForEach-Object { 'presets\' + $_.id + '.settings.ini' })
+$allowed += @('开启独立提醒.cmd', '关闭独立提醒.cmd', 'docs\BETA.md',
+    'components\notice\README.md', 'components\notice\Build-Notice.ps1',
+    'components\notice\tests\PolicyTests.cpp', 'components\notice\tests\TaskbarTargetChecks.cpp',
+    'components\notice\tests\SurfaceChecks.cpp')
+foreach ($mod in $manifest.bundledMods) {
+    $allowed += $mod.binaryPath
+    $allowed += @($mod.sourceFiles | ForEach-Object { $_.path })
+    $allowed += 'presets\' + $mod.id + '.settings.ini'
+}
 foreach ($relative in $allowed) {
     if ($relative -match '(^|[\\/])\.\.([\\/]|$)' -or [IO.Path]::IsPathRooted($relative)) { throw '非法打包路径。' }
     $source = Join-Path $project $relative

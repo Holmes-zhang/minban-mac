@@ -21,6 +21,13 @@ foreach ($file in @(Get-ChildItem -LiteralPath $project -Recurse -Filter '*.ps1'
 . (Join-Path $project 'scripts\Core.ps1')
 $manifest = Get-Manifest
 Assert-True ($manifest.name -eq '民办mac' -and $manifest.mods.Count -eq 4) '项目与模组数量'
+Assert-True ($manifest.version -match '^\d+\.\d+\.\d+-beta\.\d+$' -and @(Get-BundledMods).Count -eq 1) 'Beta版本与附带组件'
+Assert-BundledMods
+Assert-True (@(Get-AllMods).Count -eq 5) '四个上游模组和独立提醒完整'
+$notice = @(Get-BundledMods)[0]
+Assert-True ($notice.dllSha256 -match '^[A-F0-9]{64}$' -and $notice.sourceFiles.Count -eq 5) '独立提醒及对应源码清单'
+$noticeSource = [IO.File]::ReadAllText((Get-BundledProjectFile $notice.sourcePath))
+Assert-True ($noticeSource -notmatch 'g_frameRate|动画目标帧率|qq-notice-trial\.log|C:\\Users\\|D:\\') '组件没有无效帧率设置或私人路径'
 Assert-True ($manifest.windhawk.sha256 -match '^[A-F0-9]{64}$') '安装包哈希格式'
 foreach ($mod in $manifest.mods) {
     Assert-True ($mod.dllSha256 -match '^[A-F0-9]{64}$' -and $mod.sourceSha256 -match '^[A-F0-9]{64}$') ('哈希格式：' + $mod.id)
@@ -44,6 +51,34 @@ $escaped = $false
 try { [void](Assert-OwnedPath (Join-Path $sandbox 'outside.bin') $script:DataRoot) }
 catch { $escaped = $true }
 Assert-True $escaped '路径越界拒绝'
+$escaped = $false
+try { [void](Get-BundledProjectFile '../outside.dll') } catch { $escaped = $true }
+Assert-True $escaped '附带组件路径越界拒绝'
+& {
+    $fixtureRoot = Join-Path $sandbox 'BundleFixture'
+    New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+    $script:ProjectRoot = $fixtureRoot
+    $fixtureBinary = Join-Path $fixtureRoot 'fixture_1.0.dll'
+    $fixtureSource = Join-Path $fixtureRoot 'fixture.wh.cpp'
+    [IO.File]::WriteAllText($fixtureBinary, 'fixture binary')
+    [IO.File]::WriteAllText($fixtureSource, 'fixture source')
+    $fixtureMod = [pscustomobject]@{ id = 'fixture'; version = '1.0'; binaryPath = 'fixture_1.0.dll';
+        dllSha256 = Get-FileDigest $fixtureBinary; sourcePath = 'fixture.wh.cpp';
+        sourceFiles = @([pscustomobject]@{ path = 'fixture.wh.cpp'; sha256 = Get-FileDigest $fixtureSource }) }
+    function Get-BundledMods { return @($fixtureMod) }
+    Assert-BundledMods
+    Assert-True $true '附带程序与源码校验'
+    [IO.File]::WriteAllText($fixtureBinary, 'tampered')
+    $rejected = $false
+    try { Assert-BundledMods } catch { $rejected = $true }
+    Assert-True $rejected '损坏附带DLL拒绝'
+    [IO.File]::WriteAllText($fixtureBinary, 'fixture binary')
+    [IO.File]::WriteAllText($fixtureSource, 'tampered')
+    $rejected = $false
+    try { Assert-BundledMods } catch { $rejected = $true }
+    Assert-True $rejected '损坏对应源码拒绝'
+}
+$script:ProjectRoot = $project
 
 # 回归：混合的系统任务包含 COM 动作，首版会在这里直接读取缺失的 Execute。
 $taskIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -216,12 +251,41 @@ foreach ($mod in $manifest.mods) {
     [IO.File]::WriteAllText((Join-Path $script:DataRoot ('Cache\' + $mod.id + '.wh.cpp')), 'placeholder source')
 }
 Write-RuntimeConfiguration
-foreach ($mod in $manifest.mods) {
+foreach ($mod in @(Get-AllMods)) {
     $path = Join-Path $script:RuntimeRoot ('AppData\Engine\Mods\' + $mod.id + '.ini')
     $bytes = [IO.File]::ReadAllBytes($path)
     Assert-True ($bytes[0] -eq 255 -and $bytes[1] -eq 254) 'Windhawk INI 编码'
 }
 Assert-True (Test-Path -LiteralPath (Join-Path $script:RuntimeRoot 'AppData\Engine\Mods\64\libc++.whl')) '运行库目标名称'
+Assert-True ((Get-FileDigest (Join-Path $script:RuntimeRoot ('AppData\Engine\Mods\64\' + (Get-ModLibraryName $notice)))) -eq $notice.dllSha256) '独立提醒已复制到独立Runtime'
+foreach ($source in $notice.sourceFiles) {
+    Assert-True ((Get-FileDigest (Join-Path $script:RuntimeRoot ('AppData\ModsSource\' + [IO.Path]::GetFileName($source.path)))) -eq $source.sha256) '提醒源码与头文件已复制'
+}
+# 开关只修改模拟Runtime里的组件，不碰真实任务栏。
+Write-Json $script:StatePath @{ owner = 'minban-mac'; active = $true; runtimeExe = (Join-Path $script:RuntimeRoot 'windhawk.exe') }
+$baseConfigPath = Join-Path $script:RuntimeRoot 'AppData\Engine\Mods\windows-11-taskbar-styler.ini'
+$baseConfigHash = Get-FileDigest $baseConfigPath
+$noticeConfigPath = Join-Path $script:RuntimeRoot 'AppData\Engine\Mods\minban-qq-notice.ini'
+Set-NoticeEnabled $false
+Assert-True ((Get-FileDigest $baseConfigPath) -eq $baseConfigHash) '提醒开关不改变外观预设'
+Assert-True (-not (Get-NoticeEnabled) -and [IO.File]::ReadAllText($noticeConfigPath).Contains('Disabled=1')) '关闭独立提醒并持久化选择'
+Assert-True (@(Get-EnabledMods).Count -eq 4) '关闭提醒后只等待四个基本模组'
+Write-RuntimeConfiguration
+Assert-True ([IO.File]::ReadAllText($noticeConfigPath).Contains('Disabled=1')) '重新应用保留提醒关闭选择'
+Set-NoticeEnabled $true
+Assert-True ((Get-NoticeEnabled) -and @(Get-EnabledMods).Count -eq 5) '重新开启独立提醒'
+$validNoticeConfig = [IO.File]::ReadAllText($noticeConfigPath)
+[IO.File]::WriteAllText($noticeConfigPath, $validNoticeConfig.Replace((Get-ModLibraryName $notice), 'unknown.dll'), [Text.Encoding]::Unicode)
+$rejected = $false
+try { Set-NoticeEnabled $false } catch { $rejected = $true }
+Assert-True ($rejected -and (Get-NoticeEnabled)) '拒绝覆盖被改动的提醒配置'
+[IO.File]::WriteAllText($noticeConfigPath, $validNoticeConfig, [Text.Encoding]::Unicode)
+$inactive = Read-Json $script:StatePath
+$inactive.active = $false
+Write-Json $script:StatePath $inactive
+$rejected = $false
+try { Set-NoticeEnabled $false } catch { $rejected = $true }
+Assert-True $rejected '未启用时提醒开关拒绝执行'
 
 $testSubkey = 'Software\MinbanMacValidation-' + [Guid]::NewGuid().ToString('N')
 $testKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($testSubkey)
@@ -256,6 +320,7 @@ try {
     $script:taskEnabled = $true
     $script:stopCalls = 0
     $script:ownRegistered = $false
+    $script:ownRunning = $false
     $ownExe = Join-Path $script:RuntimeRoot 'windhawk.exe'
     [IO.File]::WriteAllText($ownExe, 'not executable')
     $oldExe = Join-Path $sandbox 'old-windhawk.exe'
@@ -280,7 +345,7 @@ try {
     }
     function Assert-Platform {}
     function Ensure-Runtime { return $ownExe }
-    function Get-SessionProcesses { return @() }
+    function Get-SessionProcesses { if ($script:ownRunning) { return @([pscustomobject]@{ ExecutablePath = $ownExe }) }; return @() }
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
         if ($TaskName -eq 'Fixture') { return $fakeTask }
         return $null
@@ -295,14 +360,14 @@ try {
         $script:taskEnabled = $false
     }
     function Enable-ScheduledTask { param($TaskName, $TaskPath) $script:taskEnabled = $true }
-    function Stop-Windhawk { param($Exe) $script:stopCalls++ }
+    function Stop-Windhawk { param($Exe) $script:stopCalls++; if ($Exe -eq $ownExe) { $script:ownRunning = $false } }
     function Register-OwnStartup { param($State)
         $script:ownRegistered = $true
         $State.autostartType = 'task'
         Write-Json $script:StatePath $State
     }
     function Remove-OwnStartup { param($State) $script:ownRegistered = $false }
-    function Start-Process { param($FilePath, $ArgumentList, $WindowStyle) }
+    function Start-Process { param($FilePath, $ArgumentList, $WindowStyle) if ($FilePath -eq $ownExe) { $script:ownRunning = $true } }
     function Wait-RuntimeLoaded { param($Exe) return $script:loaded }
 
     Invoke-Apply
@@ -310,7 +375,9 @@ try {
     Assert-True ($saved.active -and $script:ownRegistered -and -not $script:taskEnabled) '应用进入已启用状态'
     Assert-True ($testKey.GetValue('Search') -eq 1 -and $testKey.GetValue('Align') -eq 1) '应用设置目标值'
     Assert-True (-not (Test-Path -LiteralPath $linkPath)) '原快捷方式已备份并暂停'
+    $beforeStops = $script:stopCalls
     Invoke-Apply
+    Assert-True ($script:stopCalls -eq $beforeStops + 1) '重复应用先退出自有运行程序'
     Assert-True ($script:captures -eq 1) '重复应用保留首次原始备份'
     Invoke-Restore
     Assert-True (-not (Read-Json $script:StatePath).active -and $script:taskEnabled -and -not $script:ownRegistered) '恢复原登录行为'
